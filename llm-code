@@ -251,10 +251,49 @@ def show_tool_call(name: str, args: dict) -> None:
     )
 
 
-def show_tool_result(result: str) -> None:
-    text = result if len(result) < 600 else result[:600] + "…"
-    for line in text.splitlines() or [""]:
-        console.print(Text("    " + line, style="dim"))
+def summarize_tool(name: str, args: dict, result: str) -> tuple[str, bool]:
+    """One-line, human-readable summary of a tool call. Returns (text, ok)."""
+    failed = result.startswith("ERROR")
+    if name == "read_file":
+        path = args.get("path", "?")
+        if failed:
+            return f"read failed · {path} · {result.removeprefix('ERROR: ')}", False
+        lines = result.count("\n") + (0 if result.endswith("\n") or not result else 1)
+        return f"read {len(result)} bytes · {lines} lines · {path}", True
+    if name == "write_file":
+        path = args.get("path", "?")
+        content = args.get("content", "") or ""
+        if failed:
+            return f"write failed · {path} · {result.removeprefix('ERROR: ')}", False
+        lines = content.count("\n") + (0 if content.endswith("\n") or not content else 1)
+        return f"wrote {len(content)} bytes · {lines} lines · {path}", True
+    if name == "list_files":
+        path = args.get("path", ".")
+        if failed:
+            return f"list failed · {path} · {result.removeprefix('ERROR: ')}", False
+        if result == "(empty)":
+            return f"listed 0 entries · {path}", True
+        n = result.count("\n") + 1
+        return f"listed {n} entries · {path}", True
+    if name == "run_bash":
+        if result == "user declined to run the command":
+            return "declined · command not run", False
+        if failed:
+            return f"bash failed · {result.removeprefix('ERROR: ')}", False
+        first, _, rest = result.partition("\n")
+        try:
+            code = int(first.split("=", 1)[1])
+        except (IndexError, ValueError):
+            code = -1
+        out_lines = rest.count("\n") + (0 if rest.endswith("\n") or not rest else 1)
+        return f"exit={code} · {out_lines} output lines", code == 0
+    return (result[:80] + ("…" if len(result) > 80 else "")), not failed
+
+
+def show_tool_result(name: str, args: dict, result: str) -> None:
+    summary, ok = summarize_tool(name, args, result)
+    mark = Text("    ✓ ", style="bold green") if ok else Text("    ✗ ", style="bold red")
+    console.print(mark + Text(summary, style="green" if ok else "red"))
 
 
 def show_error(msg: str) -> None:
@@ -343,7 +382,7 @@ def agent_turn(model: str, messages: list) -> None:
                 result = impl(**args) if impl else f"unknown tool: {name}"
             except Exception as e:
                 result = f"ERROR: {type(e).__name__}: {e}"
-            show_tool_result(str(result))
+            show_tool_result(name, args, str(result))
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.get("id", ""),
