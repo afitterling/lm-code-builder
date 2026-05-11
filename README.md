@@ -4,6 +4,8 @@ A tiny, single-file CLI coding assistant that behaves like Claude Code but uses 
 
 You launch it from inside a project folder, type what you want, and the model uses tools to read, write, and run things directly in that folder.
 
+![llm-code in action](docs/screenshot.png)
+
 > ⚠️ **Hardware requirement:** need processor M4 or above. M4 is fast!
 
 ---
