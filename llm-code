@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""lmcode — a tiny Claude Code-style CLI that uses LM Studio as the backend.
+"""llm-code — Claude Code-style local CLI backed by LM Studio.
 
-Run LM Studio, load a model that supports tool/function calling, start the
-local server (default http://localhost:1234), then `python lmcode.py` from the
-folder you want the assistant to work in.
+Start LM Studio's local server with a tool-calling model loaded, then run
+`./llm-code` from the folder you want code written in.
 
 Env vars:
-  LM_BASE   base URL of the LM Studio OpenAI-compatible server
+  LM_BASE   base URL of the OpenAI-compatible server
             (default: http://localhost:1234/v1)
   LM_MODEL  model id to use (default: first model returned by /v1/models)
 """
@@ -19,10 +18,32 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.styles import Style as PTStyle
+except ImportError:
+    sys.exit("Missing dependency. Run: pip install prompt_toolkit rich")
+
+try:
+    from rich.console import Console
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.prompt import Confirm
+    from rich.text import Text
+except ImportError:
+    sys.exit("Missing dependency. Run: pip install prompt_toolkit rich")
+
 LM_BASE = os.environ.get("LM_BASE", "http://localhost:1234/v1").rstrip("/")
 LM_MODEL = os.environ.get("LM_MODEL", "")
 WORKDIR = Path.cwd().resolve()
+HISTORY_FILE = Path.home() / ".llm-code_history"
 MAX_TOOL_ROUNDS = 25
+
+console = Console()
+_current_model = "?"
 
 TOOLS = [
     {
@@ -108,12 +129,12 @@ def tool_list_files(path: str = ".") -> str:
 
 
 def tool_run_bash(command: str) -> str:
-    print(f"\n  $ {command}")
+    console.print(Text(f"  $ {command}", style="bold yellow"))
     try:
-        confirm = input("  run this command? [y/N] ").strip().lower()
-    except EOFError:
-        confirm = "n"
-    if confirm != "y":
+        ok = Confirm.ask("  run this command?", default=False, console=console)
+    except (EOFError, KeyboardInterrupt):
+        ok = False
+    if not ok:
         return "user declined to run the command"
     proc = subprocess.run(
         command, shell=True, cwd=WORKDIR,
@@ -173,31 +194,117 @@ def render_args(args: dict) -> str:
     parts = []
     for k, v in args.items():
         s = repr(v)
-        if len(s) > 80:
-            s = s[:77] + "...'"
+        if len(s) > 60:
+            s = s[:57] + "...'"
         parts.append(f"{k}={s}")
     return ", ".join(parts)
 
 
+def show_banner(model: str) -> None:
+    body = Text.assemble(
+        ("llm-code", "bold cyan"),
+        ("  ·  ", "dim"),
+        ("a local-LLM coding agent\n\n", "dim italic"),
+        ("model: ", "dim"), (model, "bold green"), ("\n", ""),
+        ("dir:   ", "dim"), (str(WORKDIR), "bold yellow"), ("\n\n", ""),
+        ("commands: ", "dim"),
+        ("/reset", "white"), ("  ", "dim"),
+        ("/exit", "white"), ("  ", "dim"),
+        ("Ctrl-D", "white"), ("\n", "dim"),
+        ("tips: ", "dim"),
+        ("↑/↓ history · Ctrl-R search · Tab autocomplete suggestions", "dim"),
+    )
+    console.print(Panel(body, border_style="cyan", padding=(0, 1)))
+
+
+def show_assistant(content: str) -> None:
+    content = (content or "").strip()
+    if not content:
+        return
+    console.print(Panel(
+        Markdown(content),
+        title="[bold cyan]assistant[/bold cyan]",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
+
+
+def show_tool_call(name: str, args: dict) -> None:
+    console.print(
+        Text("▸ ", style="bold magenta")
+        + Text(name, style="bold magenta")
+        + Text(f"({render_args(args)})", style="dim")
+    )
+
+
+def show_tool_result(result: str) -> None:
+    text = result if len(result) < 600 else result[:600] + "…"
+    for line in text.splitlines() or [""]:
+        console.print(Text("    " + line, style="dim"))
+
+
+def show_error(msg: str) -> None:
+    console.print(Panel(
+        Text(msg, style="red"),
+        border_style="red",
+        title="[bold red]error[/bold red]",
+        title_align="left",
+        padding=(0, 1),
+    ))
+
+
+def make_session() -> PromptSession:
+    style = PTStyle.from_dict({
+        "prompt": "ansicyan bold",
+        "bottom-toolbar": "bg:#1f1f1f #aaaaaa",
+        "bottom-toolbar.label": "bg:#1f1f1f #ffffff bold",
+        "bottom-toolbar.value": "bg:#1f1f1f #5fd7ff",
+        "bottom-toolbar.dir": "bg:#1f1f1f #ffaf5f",
+    })
+
+    def toolbar():
+        return HTML(
+            ' <style class="bottom-toolbar.label">llm-code</style>  '
+            'model: <style class="bottom-toolbar.value">{model}</style>  '
+            'dir: <style class="bottom-toolbar.dir">{dir}</style>  '
+            '<style class="bottom-toolbar.label">/reset · /exit</style>'
+            .format(model=_current_model, dir=str(WORKDIR))
+        )
+
+    return PromptSession(
+        history=FileHistory(str(HISTORY_FILE)),
+        auto_suggest=AutoSuggestFromHistory(),
+        style=style,
+        bottom_toolbar=toolbar,
+        complete_while_typing=False,
+        mouse_support=False,
+    )
+
+
 def agent_turn(model: str, messages: list) -> None:
     for _ in range(MAX_TOOL_ROUNDS):
-        resp = http_json("POST", f"{LM_BASE}/chat/completions", {
-            "model": model,
-            "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "temperature": 0.2,
-            "stream": False,
-        })
+        try:
+            with console.status("[dim italic]thinking…[/dim italic]", spinner="dots"):
+                resp = http_json("POST", f"{LM_BASE}/chat/completions", {
+                    "model": model,
+                    "messages": messages,
+                    "tools": TOOLS,
+                    "tool_choice": "auto",
+                    "temperature": 0.2,
+                    "stream": False,
+                })
+        except RuntimeError as e:
+            show_error(str(e))
+            return
+
         msg = resp["choices"][0]["message"]
-        # Normalise: some servers omit content when tool_calls present.
         messages.append({
             "role": "assistant",
             "content": msg.get("content") or "",
             "tool_calls": msg.get("tool_calls") or [],
         })
-        if msg.get("content"):
-            print(f"\n{msg['content'].strip()}\n")
+        show_assistant(msg.get("content") or "")
 
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
@@ -210,36 +317,40 @@ def agent_turn(model: str, messages: list) -> None:
                 args = json.loads(raw)
             except json.JSONDecodeError:
                 args = {}
-            print(f"  → {name}({render_args(args)})")
+            show_tool_call(name, args)
             impl = TOOL_IMPL.get(name)
             try:
                 result = impl(**args) if impl else f"unknown tool: {name}"
             except Exception as e:
                 result = f"ERROR: {type(e).__name__}: {e}"
+            show_tool_result(str(result))
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.get("id", ""),
                 "name": name,
                 "content": str(result),
             })
-    print("(stopped: tool-call round limit reached)")
+    show_error("tool-call round limit reached")
 
 
 def main() -> None:
+    global _current_model
     try:
-        model = detect_model()
+        _current_model = detect_model()
     except RuntimeError as e:
-        sys.exit(str(e))
+        show_error(str(e))
+        sys.exit(1)
 
-    print(f"lmcode · model={model} · dir={WORKDIR}")
-    print("Type your request. /reset clears history, /exit or Ctrl-D quits.\n")
-
+    show_banner(_current_model)
+    session = make_session()
+    prompt = HTML('<ansicyan><b>»</b></ansicyan> ')
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
     while True:
         try:
-            user = input("» ").strip()
+            user = session.prompt(prompt).strip()
         except (EOFError, KeyboardInterrupt):
-            print()
+            console.print()
             return
         if not user:
             continue
@@ -247,15 +358,15 @@ def main() -> None:
             return
         if user == "/reset":
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-            print("(history cleared)\n")
+            console.print(Text("(history cleared)", style="dim italic"))
             continue
 
         messages.append({"role": "user", "content": user})
         try:
-            agent_turn(model, messages)
-        except RuntimeError as e:
-            print(f"\n[error] {e}\n")
-            messages.pop()  # roll back the user message so retry is clean
+            agent_turn(_current_model, messages)
+        except Exception as e:
+            show_error(f"{type(e).__name__}: {e}")
+            messages.pop()
 
 
 if __name__ == "__main__":
