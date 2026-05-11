@@ -4,12 +4,17 @@
 Start LM Studio's local server with a tool-calling model loaded, then run
 `./llm-code` from the folder you want code written in.
 
+Flags:
+  --yes / -y   auto-approve every run_bash call (skip the y/N prompt)
+
 Env vars:
-  LM_BASE   base URL of the OpenAI-compatible server
-            (default: http://localhost:1234/v1)
-  LM_MODEL  model id to use (default: first model returned by /v1/models)
+  LM_BASE      base URL of the OpenAI-compatible server
+               (default: http://localhost:1234/v1)
+  LM_MODEL     model id to use (default: first model returned by /v1/models)
+  LLM_CODE_YES if set to 1/true/yes, start in auto-yes mode
 """
 
+import argparse
 import json
 import os
 import subprocess
@@ -44,6 +49,7 @@ MAX_TOOL_ROUNDS = 25
 
 console = Console()
 _current_model = "?"
+_auto_yes = os.environ.get("LLM_CODE_YES", "").lower() in ("1", "true", "yes", "y")
 
 TOOLS = [
     {
@@ -130,12 +136,15 @@ def tool_list_files(path: str = ".") -> str:
 
 def tool_run_bash(command: str) -> str:
     console.print(Text(f"  $ {command}", style="bold yellow"))
-    try:
-        ok = Confirm.ask("  run this command?", default=False, console=console)
-    except (EOFError, KeyboardInterrupt):
-        ok = False
-    if not ok:
-        return "user declined to run the command"
+    if _auto_yes:
+        console.print(Text("  auto-yes: running without prompt", style="dim italic"))
+    else:
+        try:
+            ok = Confirm.ask("  run this command?", default=False, console=console)
+        except (EOFError, KeyboardInterrupt):
+            ok = False
+        if not ok:
+            return "user declined to run the command"
     proc = subprocess.run(
         command, shell=True, cwd=WORKDIR,
         capture_output=True, text=True, timeout=300,
@@ -201,14 +210,18 @@ def render_args(args: dict) -> str:
 
 
 def show_banner(model: str) -> None:
+    mode = ("auto-yes ON", "bold red") if _auto_yes else ("ask before bash", "bold green")
     body = Text.assemble(
         ("llm-code", "bold cyan"),
         ("  ·  ", "dim"),
         ("a local-LLM coding agent\n\n", "dim italic"),
         ("model: ", "dim"), (model, "bold green"), ("\n", ""),
-        ("dir:   ", "dim"), (str(WORKDIR), "bold yellow"), ("\n\n", ""),
+        ("dir:   ", "dim"), (str(WORKDIR), "bold yellow"), ("\n", ""),
+        ("mode:  ", "dim"), mode, ("\n\n", ""),
         ("commands: ", "dim"),
         ("/reset", "white"), ("  ", "dim"),
+        ("/yes", "white"), ("  ", "dim"),
+        ("/ask", "white"), ("  ", "dim"),
         ("/exit", "white"), ("  ", "dim"),
         ("Ctrl-D", "white"), ("\n", "dim"),
         ("tips: ", "dim"),
@@ -261,15 +274,22 @@ def make_session() -> PromptSession:
         "bottom-toolbar.label": "bg:#1f1f1f #ffffff bold",
         "bottom-toolbar.value": "bg:#1f1f1f #5fd7ff",
         "bottom-toolbar.dir": "bg:#1f1f1f #ffaf5f",
+        "bottom-toolbar.yes": "bg:#5f0000 #ffffff bold",
+        "bottom-toolbar.ask": "bg:#1f1f1f #5fff5f",
     })
 
     def toolbar():
+        if _auto_yes:
+            mode_html = '<style class="bottom-toolbar.yes"> AUTO-YES </style>'
+        else:
+            mode_html = '<style class="bottom-toolbar.ask">ask</style>'
         return HTML(
             ' <style class="bottom-toolbar.label">llm-code</style>  '
             'model: <style class="bottom-toolbar.value">{model}</style>  '
             'dir: <style class="bottom-toolbar.dir">{dir}</style>  '
-            '<style class="bottom-toolbar.label">/reset · /exit</style>'
-            .format(model=_current_model, dir=str(WORKDIR))
+            'mode: {mode}  '
+            '<style class="bottom-toolbar.label">/yes · /ask · /reset · /exit</style>'
+            .format(model=_current_model, dir=str(WORKDIR), mode=mode_html)
         )
 
     return PromptSession(
@@ -333,8 +353,21 @@ def agent_turn(model: str, messages: list) -> None:
     show_error("tool-call round limit reached")
 
 
+EXIT_WORDS = {"/exit", "/quit", "exit", "quit", ":q"}
+
+
 def main() -> None:
-    global _current_model
+    global _current_model, _auto_yes
+
+    parser = argparse.ArgumentParser(prog="llm-code", add_help=True)
+    parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="auto-approve every run_bash call (skip the y/N prompt)",
+    )
+    args = parser.parse_args()
+    if args.yes:
+        _auto_yes = True
+
     try:
         _current_model = detect_model()
     except RuntimeError as e:
@@ -354,11 +387,21 @@ def main() -> None:
             return
         if not user:
             continue
-        if user in ("/exit", "/quit"):
+        if user.lower() in EXIT_WORDS:
             return
         if user == "/reset":
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             console.print(Text("(history cleared)", style="dim italic"))
+            continue
+        if user in ("/yes", "/auto"):
+            _auto_yes = True
+            console.print(Text("auto-yes mode ON — bash runs without confirmation",
+                               style="bold red"))
+            continue
+        if user in ("/ask", "/no", "/confirm"):
+            _auto_yes = False
+            console.print(Text("auto-yes mode OFF — bash will prompt for y/N",
+                               style="bold green"))
             continue
 
         messages.append({"role": "user", "content": user})
