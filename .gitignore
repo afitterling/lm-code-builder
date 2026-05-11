@@ -1,0 +1,19 @@
+# Python virtual environment
+bin/
+lib/
+lib64
+include/
+pyvenv.cfg
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# llm-code runtime
+.llm-code_history
+
+# OS
+.DS_Store
