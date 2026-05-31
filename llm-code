@@ -311,24 +311,21 @@ def make_session() -> PromptSession:
     style = PTStyle.from_dict({
         "prompt": "ansicyan bold",
         "bottom-toolbar": "bg:#1f1f1f #aaaaaa",
-        "bottom-toolbar.label": "bg:#1f1f1f #ffffff bold",
-        "bottom-toolbar.value": "bg:#1f1f1f #5fd7ff",
-        "bottom-toolbar.dir": "bg:#1f1f1f #ffaf5f",
-        "bottom-toolbar.yes": "bg:#d70087 #ffffff bold",
-        "bottom-toolbar.ask": "bg:#00afaf #000000 bold",
     })
 
     def toolbar():
+        # prompt_toolkit's HTML honours inline fg/bg attributes but ignores
+        # class= (and drops the <style> tag name), so colours must be inline.
         if _auto_yes:
-            mode_html = '<style class="bottom-toolbar.yes"> AUTO-YES </style>'
+            mode_html = '<style bg="#d70087" fg="#ffffff"><b> AUTO-YES </b></style>'
         else:
-            mode_html = '<style class="bottom-toolbar.ask"> ASK </style>'
+            mode_html = '<style bg="#00afaf" fg="#000000"><b> ASK </b></style>'
         return HTML(
-            ' <style class="bottom-toolbar.label">llm-code</style>  '
-            'model: <style class="bottom-toolbar.value">{model}</style>  '
-            'dir: <style class="bottom-toolbar.dir">{dir}</style>  '
+            ' <b>llm-code</b>  '
+            'model: <style fg="#5fd7ff">{model}</style>  '
+            'dir: <style fg="#ffaf5f">{dir}</style>  '
             'mode: {mode}  '
-            '<style class="bottom-toolbar.label">/yes · /ask · /reset · /exit</style>'
+            '<b>/yes · /ask · /reset · /exit</b>'
             .format(model=_current_model, dir=str(WORKDIR), mode=mode_html)
         )
 
