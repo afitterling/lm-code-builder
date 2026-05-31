@@ -28,6 +28,7 @@ try:
     from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.formatted_text import HTML
     from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.styles import Style as PTStyle
 except ImportError:
     sys.exit("Missing dependency. Run: pip install prompt_toolkit rich")
@@ -225,7 +226,7 @@ def show_banner(model: str) -> None:
         ("/exit", "white"), ("  ", "dim"),
         ("Ctrl-D", "white"), ("\n", "dim"),
         ("tips: ", "dim"),
-        ("↑/↓ history · Ctrl-R search · Tab autocomplete suggestions", "dim"),
+        ("↑/↓ history · Ctrl-R search · Shift-Tab toggles ask/auto-yes", "dim"),
     )
     console.print(Panel(body, border_style="cyan", padding=(0, 1)))
 
@@ -313,15 +314,15 @@ def make_session() -> PromptSession:
         "bottom-toolbar.label": "bg:#1f1f1f #ffffff bold",
         "bottom-toolbar.value": "bg:#1f1f1f #5fd7ff",
         "bottom-toolbar.dir": "bg:#1f1f1f #ffaf5f",
-        "bottom-toolbar.yes": "bg:#5f0000 #ffffff bold",
-        "bottom-toolbar.ask": "bg:#1f1f1f #5fff5f",
+        "bottom-toolbar.yes": "bg:#d70087 #ffffff bold",
+        "bottom-toolbar.ask": "bg:#00afaf #000000 bold",
     })
 
     def toolbar():
         if _auto_yes:
             mode_html = '<style class="bottom-toolbar.yes"> AUTO-YES </style>'
         else:
-            mode_html = '<style class="bottom-toolbar.ask">ask</style>'
+            mode_html = '<style class="bottom-toolbar.ask"> ASK </style>'
         return HTML(
             ' <style class="bottom-toolbar.label">llm-code</style>  '
             'model: <style class="bottom-toolbar.value">{model}</style>  '
@@ -331,11 +332,20 @@ def make_session() -> PromptSession:
             .format(model=_current_model, dir=str(WORKDIR), mode=mode_html)
         )
 
+    kb = KeyBindings()
+
+    @kb.add("s-tab")
+    def _(event):
+        global _auto_yes
+        _auto_yes = not _auto_yes
+        event.app.invalidate()  # redraw the bottom toolbar to reflect the new mode
+
     return PromptSession(
         history=FileHistory(str(HISTORY_FILE)),
         auto_suggest=AutoSuggestFromHistory(),
         style=style,
         bottom_toolbar=toolbar,
+        key_bindings=kb,
         complete_while_typing=False,
         mouse_support=False,
     )
