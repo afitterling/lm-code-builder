@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -146,14 +147,35 @@ def tool_run_bash(command: str) -> str:
             ok = False
         if not ok:
             return "user declined to run the command"
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         command, shell=True, cwd=WORKDIR,
-        capture_output=True, text=True, timeout=300,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
-    out = (proc.stdout or "") + (proc.stderr or "")
-    if len(out) > 8000:
+    timed_out = {"v": False}
+
+    def _kill():
+        timed_out["v"] = True
+        proc.kill()
+
+    timer = threading.Timer(300, _kill)
+    timer.start()
+    captured = []
+    try:
+        for line in proc.stdout:           # stream each line live as it arrives
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            captured.append(line)
+    finally:
+        proc.stdout.close()
+        proc.wait()
+        timer.cancel()
+
+    out = "".join(captured)
+    if len(out) > 8000:                    # only the copy fed back to the model is capped
         out = out[:4000] + "\n…[truncated]…\n" + out[-4000:]
-    return f"exit={proc.returncode}\n{out}"
+    suffix = "\n[timed out after 300s — killed]" if timed_out["v"] else ""
+    return f"exit={proc.returncode}{suffix}\n{out}"
 
 
 TOOL_IMPL = {
