@@ -1,0 +1,4 @@
+1.commit
+2.copy binary to $HOME/bin
+3.git push main
+
